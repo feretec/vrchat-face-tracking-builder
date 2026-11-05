@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace FaceTrackingBuilder
 {
-    public sealed class SceneExpressionEditor : IDisposable
+    public sealed partial class SceneExpressionEditor : IDisposable
     {
         public BuilderSession session;
         public RendererPlan plan;
@@ -24,16 +24,16 @@ namespace FaceTrackingBuilder
         Matrix4x4[] skinMatrices;
         int[] mirrorPairs;
         Vector3[] baseVertices;
-        public SceneExpressionEditor() { SceneView.duringSceneGui += Draw; }
-        public void Invalidate() { skinMatrices = null; mirrorPairs = null; }
-        public void Dispose() { controls?.Dispose(); controls = null; SceneView.duringSceneGui -= Draw; if (baked) UnityEngine.Object.DestroyImmediate(baked); baked = null; }
+        public SceneExpressionEditor() { SceneView.beforeSceneGui += BeforeSelectionGUI; SceneView.duringSceneGui += Draw; Undo.undoRedoPerformed += SelectionUndoRedo; }
+        public void Invalidate() { EndSelectionInteraction(false); skinMatrices = null; mirrorPairs = null; InvalidateSelectionGeometry(); }
+        public void Dispose() { EndSelectionInteraction(false); DisposeSelection(); controls?.Dispose(); controls = null; SceneView.beforeSceneGui -= BeforeSelectionGUI; SceneView.duringSceneGui -= Draw; Undo.undoRedoPerformed -= SelectionUndoRedo; if (baked) UnityEngine.Object.DestroyImmediate(baked); baked = null; }
         public void ShowControls()
         {
             var view = session.ShowView();
             if (controls == null || controls.View != view) { controls?.Dispose(); controls = new SceneBrushPanel(this, view); }
             controls.Refresh();
         }
-        public void Compare(bool neutral) { session.Compare(neutral); controls?.Refresh(); displayChanged?.Invoke(); }
+        public void Compare(bool neutral) { EndSelectionInteraction(false); session.Compare(neutral); controls?.Refresh(); displayChanged?.Invoke(); }
         void Prepare(SkinnedMeshRenderer r)
         {
             if (skinMatrices != null) return;
@@ -76,17 +76,19 @@ namespace FaceTrackingBuilder
         void Draw(SceneView view)
         {
             if (session == null || view != session.View) return;
+            if (!CanEdit || pointerOverControls || Event.current.alt) EndSelectionInteraction(false);
             if (undoGroup >= 0 && (Event.current.type == EventType.MouseUp || !CanEdit || pointerOverControls || Event.current.alt))
             {
                 if (GUIUtility.hotControl == control) GUIUtility.hotControl = 0;
                 Undo.CollapseUndoOperations(undoGroup); undoGroup = -1;
             }
-            if (!CanEdit || plan == null || pointerOverControls || EditorApplication.isPlayingOrWillChangePlaymode) return;
+            if (!CanEdit || plan == null || (!selectionMode && pointerOverControls) || EditorApplication.isPlayingOrWillChangePlaymode) return;
             try { DrawInternal(view); }
-            catch (Exception ex) { enabled = false; GUIUtility.hotControl = 0; failed?.Invoke(ex); }
+            catch (Exception ex) { EndSelectionInteraction(true); enabled = false; if (GUIUtility.hotControl == control) GUIUtility.hotControl = 0; failed?.Invoke(ex); }
         }
         void DrawInternal(SceneView view)
         {
+            if (selectionMode) { DrawSelection(view); return; }
             var r = session.Renderer(plan); Prepare(r);
             Event e = Event.current;
             if (!brush) return;
@@ -131,6 +133,7 @@ namespace FaceTrackingBuilder
         }
         void Stroke(Vector3[] world, Vector3 hit, Vector3 normal, bool inverse)
         {
+            Prepare(session.Renderer(plan));
             if (recipe.sculpt.Length != world.Length) recipe.sculpt = new Vector3[world.Length];
             if (recipe.mask.Length != world.Length) recipe.mask = Enumerable.Repeat(1f, world.Length).ToArray();
             if (symmetric && mirrorPairs == null) mirrorPairs = MeshEngine.MirrorPairs(baseVertices, recipe.planeOrigin, recipe.planeRight, recipe.mirrorTolerance);
@@ -152,7 +155,7 @@ namespace FaceTrackingBuilder
             }
             Commit();
         }
-        void Commit() { EditorUtility.SetDirty(session.Profile); session.Rebuild(); session.Weight(plan.path, recipe.name, 100); changed?.Invoke(); }
+        void Commit() { EditorUtility.SetDirty(session.Profile); session.Rebuild(); session.Weight(plan.path, recipe.name, 100); InvalidateSelectionGeometry(); changed?.Invoke(); }
         static bool Hit(Ray ray, Vector3[] v, int[] triangles, out Vector3 point, out Vector3 normal, out int nearest)
         {
             float closest = float.MaxValue; point = Vector3.zero; normal = Vector3.up; nearest = 0;

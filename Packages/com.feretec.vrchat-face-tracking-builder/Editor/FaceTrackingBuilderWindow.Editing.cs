@@ -30,7 +30,7 @@ namespace FaceTrackingBuilder
                 var r = Recipe(); if (r == null) return false;
                 bool before = session != null && session.Comparing;
                 EnsurePreview();
-                if (recipePreviewed != CurrentFingerprint()) session.Rebuild();
+                if (recipePreviewed != CurrentFingerprint()) { session.Rebuild(); sceneEditor?.Invalidate(); }
                 session.ResetWeights(); session.Weight(Plan().path, r.name, 100); session.Compare(before);
                 if (sceneEditor != null)
                 {
@@ -64,7 +64,11 @@ namespace FaceTrackingBuilder
             var editing = Column(content, "editing-tools"); editing.name = "editingTools";
             var editingActions = Column(editing, "editing-actions"); editingActions.name = "editingActions";
             var choices = Column(editingActions, "choice-row"); choices.name = "editingMethods";
-            var brush = Button(editingActions, "ブラシで編集", StartEditing); brush.name = "openBrushEditor"; brush.AddToClassList("brush-entry"); brush.SetEnabled(!linked);
+            var brush = Button(editingActions, "形状を編集", StartEditing); brush.name = "openBrushEditor"; brush.AddToClassList("brush-entry"); brush.SetEnabled(!linked);
+            brush.text = "";
+            var editTitle = new Label("形状を編集") { pickingMode = PickingMode.Ignore }; brush.Add(editTitle);
+            var editIcon = new BuilderIconElement(BuilderIcon.Brush) { name = "shapeEditIcon" }; brush.Add(editIcon);
+            brush.tooltip = "編集ウィンドウでブラシや頂点選択を使って形を変更します。";
             if (linked) brush.tooltip = "元の表情を編集するか、ミラー設定を個別に編集してください。";
             if (linked)
             {
@@ -80,7 +84,7 @@ namespace FaceTrackingBuilder
                 from.name = "editFromBlendShapes"; from.EnableInClassList("selected-choice", fromShapes);
                 var blank = Button(choices, "元の顔から作る", () => { Change("元の顔から作成", () => r.mode = GenerateMode.Landmarks); RefreshContent(); });
                 blank.name = "editFromNeutral"; blank.EnableInClassList("selected-choice", !fromShapes);
-                blank.tooltip = "既存のBlendShapeを使わず、元の顔をベースに編集します。ブラシの編集内容は保持します。";
+                blank.tooltip = "既存のBlendShapeを使わず、元の顔をベースに編集します。形状の編集内容は保持します。";
                 if (fromShapes)
                 {
                     Text(editing, "選んだBlendShapeと強さが生成結果に反映されます。", "muted");

@@ -104,7 +104,7 @@ namespace FaceTrackingBuilder
             customScene.SetValue(View, previewScene);
             var culling = typeof(SceneView).GetProperty("overrideSceneCullingMask", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
             culling?.SetValue(View, EditorSceneManager.GetSceneCullingMask(previewScene));
-            View.sceneLighting = true; View.cameraMode = SceneView.GetBuiltinCameraMode(DrawCameraMode.Textured); View.Show(); View.camera.scene = previewScene; return View;
+            View.sceneLighting = true; View.cameraMode = SceneView.GetBuiltinCameraMode(DrawCameraMode.TexturedWire); View.Show(); View.camera.scene = previewScene; return View;
         }
         public SkinnedMeshRenderer Renderer(RendererPlan plan) => AvatarAnalysis.Resolve(Clone, plan.path);
         public void Rebuild()

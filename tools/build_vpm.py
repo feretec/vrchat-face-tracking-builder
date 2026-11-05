@@ -30,6 +30,9 @@ def build(output, write_index=False, check=False):
     output.mkdir(parents=True, exist_ok=True)
     archive_path = output / filename
     allowed = {".cs", ".meta", ".uxml", ".uss", ".asmdef", ".json", ".md"}
+    icon_assets = {f"Editor/Icons/Tabler/{name}{suffix}"
+                   for name in ("brush", "circle-dashed", "topology-star-3", "polygon")
+                   for suffix in (".svg", ".png")}
     files = sorted((p for p in PACKAGE.rglob("*") if p.is_file()),
                    key=lambda p: p.relative_to(PACKAGE).as_posix())
     guids = set()
@@ -39,11 +42,13 @@ def build(output, write_index=False, check=False):
         for path in files:
             if path.is_symlink() or not path.resolve().is_relative_to(PACKAGE.resolve()):
                 raise ValueError(f"External package file: {path}")
-            if path.suffix not in allowed or path.stat().st_size > 2_000_000:
+            is_icon = path.relative_to(PACKAGE).as_posix() in icon_assets
+            if (path.suffix not in allowed and not is_icon) or path.stat().st_size > 2_000_000:
                 raise ValueError(f"Unexpected package file: {path}")
             if path.suffix != ".meta" and not Path(str(path) + ".meta").is_file():
                 raise ValueError(f"Missing Unity metadata: {path}")
-            data = path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+            data = (path.read_bytes() if is_icon and path.suffix == ".png" else
+                    path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
             if path.suffix == ".meta":
                 match = re.search(rb"^guid: ([0-9a-f]{32})$", data, re.MULTILINE)
                 if not match or match[1] in guids:

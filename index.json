@@ -25,6 +25,26 @@
             "Assets\\FaceTrackingBuilder": "4eb03e6901c100d438a1d8eddf008329"
           },
           "zipSHA256": "63f85554a9abef29d4dc4fdef8659b9e819621029628e40ec033ecd1254723a3"
+        },
+        "0.1.2": {
+          "name": "com.feretec.vrchat-face-tracking-builder",
+          "displayName": "VRChat Face Tracking Builder",
+          "version": "0.1.2",
+          "unity": "2022.3",
+          "unityRelease": "22f1",
+          "description": "既存アバターの表情を確認・編集し、VRChat公式Face Trackingに設定するUnity Editor拡張。",
+          "author": {
+            "name": "feretec",
+            "url": "https://github.com/feretec"
+          },
+          "url": "https://github.com/feretec/vrchat-face-tracking-builder/releases/download/v0.1.2/com.feretec.vrchat-face-tracking-builder-0.1.2.zip",
+          "vpmDependencies": {
+            "com.vrchat.avatars": ">=3.10.6 <4.0.0"
+          },
+          "legacyFolders": {
+            "Assets\\FaceTrackingBuilder": "4eb03e6901c100d438a1d8eddf008329"
+          },
+          "zipSHA256": "46c0a878f9ea5623520589f051963eb2a77ac3b35b7ac569ef001fef0d7b2871"
         }
       }
     }
