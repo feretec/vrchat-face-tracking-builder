@@ -30,7 +30,8 @@ def build(output, write_index=False, check=False):
     output.mkdir(parents=True, exist_ok=True)
     archive_path = output / filename
     allowed = {".cs", ".meta", ".uxml", ".uss", ".asmdef", ".json", ".md"}
-    files = sorted(p for p in PACKAGE.rglob("*") if p.is_file())
+    files = sorted((p for p in PACKAGE.rglob("*") if p.is_file()),
+                   key=lambda p: p.relative_to(PACKAGE).as_posix())
     guids = set()
     # Store text uncompressed with fixed metadata: identical SHA-256 on Windows/Linux.
     # This allowlist prevents accidental redistribution of avatar assets or binaries.

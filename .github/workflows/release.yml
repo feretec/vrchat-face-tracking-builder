@@ -12,11 +12,14 @@ permissions:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate package and repository index
-        run: python3 tools/build_vpm.py --check
+        run: python tools/build_vpm.py --check
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -45,3 +48,36 @@ jobs:
           gh release create "$RELEASE_TAG" dist/vpm/*.zip \
             --verify-tag --title "VRChat Face Tracking Builder $RELEASE_TAG" \
             --notes "VCC / ALCOMからの導入手順はREADMEをご確認ください。"
+      - name: Verify published VPM installation in an isolated project
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/vrc-get/vrc-get/releases/download/v1.9.3/x86_64-unknown-linux-musl-vrc-get \
+            --output "$RUNNER_TEMP/vrc-get"
+          echo "058daf0fc1b416c0bdd102910230a07d4884b39d5a19e477129712883033d574  $RUNNER_TEMP/vrc-get" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/vrc-get"
+          export XDG_DATA_HOME="$RUNNER_TEMP/vpm-settings"
+          export VPM_TEST_PROJECT="$RUNNER_TEMP/vpm-project"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          project = Path(os.environ['VPM_TEST_PROJECT'])
+          for name in ['Assets', 'Packages', 'ProjectSettings']:
+              (project / name).mkdir(parents=True, exist_ok=True)
+          (project / 'Packages/manifest.json').write_text('{"dependencies":{}}')
+          (project / 'Packages/vpm-manifest.json').write_text('{"dependencies":{},"locked":{}}')
+          (project / 'ProjectSettings/ProjectVersion.txt').write_text('m_EditorVersion: 2022.3.22f1\n')
+          PY
+          "$RUNNER_TEMP/vrc-get" repo add https://raw.githubusercontent.com/feretec/vrchat-face-tracking-builder/main/index.json
+          "$RUNNER_TEMP/vrc-get" install com.feretec.vrchat-face-tracking-builder "${GITHUB_REF_NAME#v}" --project "$VPM_TEST_PROJECT" --yes
+          python3 - <<'PY'
+          import hashlib, json, os, zipfile
+          from pathlib import Path
+          name = 'com.feretec.vrchat-face-tracking-builder'
+          package = Path(os.environ['VPM_TEST_PROJECT']) / 'Packages' / name
+          expected = json.loads(Path('Packages', name, 'package.json').read_text())
+          assert json.loads((package / 'package.json').read_text()) == expected
+          with zipfile.ZipFile(next(Path('dist/vpm').glob('*.zip'))) as archive:
+              for entry in archive.namelist():
+                  assert (package / entry).read_bytes() == archive.read(entry), entry
+          print('Published package installed successfully; every file matches the verified ZIP.')
+          PY
