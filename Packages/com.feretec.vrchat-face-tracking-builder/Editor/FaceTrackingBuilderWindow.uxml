@@ -1,0 +1,11 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements">
+    <ui:Style src="FaceTrackingBuilderWindow.uss" />
+    <ui:VisualElement name="builderRoot" class="builder-root">
+        <ui:Label text="VRChat Face Tracking Builder" class="title" />
+        <ui:VisualElement name="header" />
+        <ui:VisualElement name="tabs" class="row tabs" />
+        <ui:ScrollView name="content" class="content" />
+        <ui:VisualElement name="actions" class="actions" />
+        <ui:Label name="message" class="message" />
+    </ui:VisualElement>
+</ui:UXML>

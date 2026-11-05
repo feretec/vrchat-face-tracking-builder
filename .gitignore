@@ -1,0 +1,18 @@
+# Publish only the tool and its distribution files. The Unity project contains
+# licensed avatars, generated assets, third-party SDKs and private settings.
+/*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/index.json
+!/.github/
+!/.github/**
+!/Packages/
+/Packages/*
+!/Packages/com.feretec.vrchat-face-tracking-builder/
+!/Packages/com.feretec.vrchat-face-tracking-builder/**
+!/tools/
+/tools/*
+!/tools/build_vpm.py
+**/__pycache__/
+**/.DS_Store
