@@ -145,7 +145,9 @@ namespace FaceTrackingBuilder
             if (key.StartsWith("EyeLookUp")) aliases = new[] { "LookUp", "EyeLookUp", "上を見る" };
             if (key.StartsWith("EyeLookDown")) aliases = new[] { "LookDown", "EyeLookDown", "下を見る" };
             if (key.StartsWith("EyeClosed")) aliases = new[] { "EyeClosed", "eyeBlink", "blink", "まばたき" };
-            if (key.StartsWith("MouthCornerPull")) aliases = new[] { "MouthCornerPull", "mouthSmile", "kuchi_smile_1", "口角上げ" };
+            if (key.StartsWith("EyeWide")) aliases = new[] { "びっくり" };
+            if (key.StartsWith("BrowInnerUp")) aliases = new[] { "困る" };
+            if (key.StartsWith("MouthCornerPull")) aliases = new[] { "MouthCornerPull", "mouthSmile", "kuchi_smile_1", "口角上げ", "にやり" };
             if (aliases == null) return null;
             var names = Enumerable.Range(0, plan.source.blendShapeCount).Select(plan.source.GetBlendShapeName).ToArray();
             string source = aliases.Select(a => names.FirstOrDefault(n => string.Equals(n, a, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(n => n != null);

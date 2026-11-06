@@ -128,6 +128,9 @@
 .portrait-controls { flex-grow: 1; flex-shrink: 1; flex-basis: var(--ftb-size-portrait-controls); min-width: var(--ftb-size-portrait-controls); margin-left: var(--ftb-space-3); }
 .portrait-controls .unity-base-field__label { min-width: var(--ftb-size-label-compact); }
 .shape-name { white-space: normal; color: var(--ftb-color-link); }
+.shape-selection-header { flex-direction: row; flex-wrap: wrap; align-items: center; margin-bottom: var(--ftb-space-3); }
+.shape-selection-header > Label { min-width: 0; flex-shrink: 1; white-space: normal; margin-right: var(--ftb-space-3); margin-bottom: var(--ftb-space-1); }
+.shape-target-label { color: var(--ftb-color-link); }
 .details { margin-top: var(--ftb-space-3); margin-bottom: var(--ftb-space-3); }
 .details > .unity-foldout__content { padding: var(--ftb-space-3) var(--ftb-space-2); }
 .actions { flex-direction: row; align-items: center; justify-content: flex-end; border-top-width: 1px; border-top-color: var(--ftb-color-divider); padding-top: var(--ftb-space-3); }

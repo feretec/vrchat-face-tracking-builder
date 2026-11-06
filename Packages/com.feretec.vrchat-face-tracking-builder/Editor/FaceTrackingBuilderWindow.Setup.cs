@@ -154,11 +154,20 @@ namespace FaceTrackingBuilder
                 mesh.RegisterValueChangedCallback(e => plan = plans[mesh.index]); parent.Add(mesh);
             }
             var buttons = Row(parent); buttons.name = "mappingActions"; buttons.AddToClassList("mapping-actions");
-            Button(buttons, string.IsNullOrEmpty(mapping.shape) ? "既存の表情を選ぶ" : "使う表情を変更", () => PickShape(null, mapping.shape, name => Change("マッピングを変更", () => { mapping.shape = name; mapping.confirmed = true; mapping.excluded = false; mapping.reason = "手動指定"; mapping.confidence = 0; })));
+            var change = Button(buttons, string.IsNullOrEmpty(mapping.shape) ? "既存の表情を選ぶ" : "使う表情を変更", () => PickShape(null, mapping.shape, name => SelectMappingShape(mapping, name), mapping.key));
+            change.name = "changeMappedExpression";
             var edit = Button(buttons, "表情を編集", () => EditMapping(mapping, plan)); edit.name = "editMappedExpression"; edit.SetEnabled(plan != null);
             edit.tooltip = plan != null ? "選択中の表情を引き継いで編集します。元のMeshは変更しません。" : "先に既存の表情を選んでください。";
             if (!string.IsNullOrEmpty(mapping.shape)) Button(buttons, mapping.excluded ? "除外を取り消す" : "この候補を除外", () => { Change("候補の除外を変更", () => mapping.excluded = !mapping.excluded); refresh(); });
             if (!string.IsNullOrEmpty(mapping.shape)) Portrait(parent, mapping.shape, null);
+        }
+        void SelectMappingShape(TrackingMapping mapping, string name)
+        {
+            Change("マッピングを変更", () =>
+            {
+                mapping.shape = name; mapping.confirmed = true; mapping.excluded = false;
+                mapping.reason = "手動指定"; mapping.confidence = 0;
+            });
         }
         void EditMapping(TrackingMapping mapping, RendererPlan plan)
         {
@@ -199,11 +208,11 @@ namespace FaceTrackingBuilder
             var magnification = new Slider("拡大", .5f, 1.8f) { value = zoom }; magnification.RegisterValueChangedCallback(e => { zoom = e.newValue; Guard(Render); }); controls.Add(magnification);
             Guard(Render);
         }
-        void PickShape(RendererPlan plan, string current, Action<string> accept)
+        void PickShape(RendererPlan plan, string current, Action<string> accept, string trackingKey = null)
         {
             RememberScroll(); recipeRefresh?.Pause(); renderRecipePortrait = null;
             if (sceneEditor != null) sceneEditor.enabled = false; content.Clear(); Actions.Clear(); picker?.Dispose();
-            picker = new ShapePicker(profile, plan, current, name => Guard(() => { accept(name); session?.Rebuild(); RefreshContent(); }), () => Guard(RefreshContent), plan != null && editingRecipe ? Recipe() : null); content.Add(picker); Actions.Add(picker.ActionBar);
+            picker = new ShapePicker(profile, plan, current, name => Guard(() => { accept(name); session?.Rebuild(); RefreshContent(); }), () => Guard(RefreshContent), plan != null && editingRecipe ? Recipe() : null, trackingKey); content.Add(picker); Actions.Add(picker.ActionBar);
         }
         void Apply()
         {

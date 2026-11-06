@@ -212,6 +212,64 @@ namespace FaceTrackingBuilder
                     }
                     finally { Object.DestroyImmediate(p); Object.DestroyImmediate(go); Object.DestroyImmediate(m); }
                 });
+                Test(report, "閉眼の追加別名・全角半角・表情のおすすめ順", () =>
+                {
+                    var p = ScriptableObject.CreateInstance<BuilderProfile>(); var m = Object.Instantiate(mesh);
+                    try
+                    {
+                        const string fullWidth = "ｅｙｅ＿まばたき＿Ｌ";
+                        m.AddBlendShapeFrame(fullWidth, 100, new Vector3[4], null, null);
+                        p.renderers.Add(new RendererPlan { source = m, selected = true }); AvatarAnalysis.Suggest(p);
+                        Check(p.mappings.First(x => x.key == "EyeClosedLeft").shape == fullWidth, "normalized alias keeps actual source name");
+                        Check(p.mappings.First(x => x.key == "EyeClosedRight").shape != fullWidth, "alias does not cross sides");
+                        var names = new[] { "Hat_Hide", "eye_close_R", "EyeBlinkLeft", "Eye_Blink_L", "EyeBlinkLeft", "ｅｙｅ＿まばたき＿Ｌ" };
+                        var ranked = AvatarAnalysis.RankShapes(names, "EyeClosedLeft", "Eye_Blink_L");
+                        Check(ranked.Length == 5 && ranked.Any(c => c.name == "Eye_Blink_L"), "keep current shape and deduplicate");
+                        Check(ranked.Any(c => c.name == "EyeBlinkLeft"), "keep a different shape with equivalent normalized name");
+                        Check(ranked.Any(c => c.name == "eye_close_R"), "manual alternatives remain selectable across sides");
+                        Check(ranked[0].similarity == 1 && ranked.Last().name == "Hat_Hide", "known aliases above unrelated shapes");
+                        Check(ranked.Select(c => c.name).SequenceEqual(AvatarAnalysis.RankShapes(names.Reverse(), "EyeClosedLeft", "Eye_Blink_L").Select(c => c.name)), "stable ties independent of source order");
+                        Check(AvatarAnalysis.RankShapes(null, null, null).Length == 0, "empty input");
+                        Check(AvatarAnalysis.RankShapes(new[] { "---", "Hat" }, null, null).Length == 2, "do not hide punctuation-only source shapes");
+                    }
+                    finally { Object.DestroyImmediate(p); Object.DestroyImmediate(m); }
+                });
+                Test(report, "MMD通常閉眼をSDKより優先・表記揺れ・手動設定保持", () =>
+                {
+                    foreach (var pair in new[] { new[] { "ウィンク2", "ウィンク2右" }, new[] { "ウィンク２", "ｳｨﾝｸ２右" } })
+                    {
+                        var p = ScriptableObject.CreateInstance<BuilderProfile>(); var m = Object.Instantiate(mesh);
+                        var root = new GameObject("MmdBlinkFixture");
+                        try
+                        {
+                            foreach (string name in new[] { "vrc.blink_left", "vrc.blink_right", "EyeClosedLeft", "EyeClosedRight", "ウィンク", "ウィンク右", "jawOpen" })
+                                m.AddBlendShapeFrame(name, 100, new Vector3[4], null, null);
+                            m.AddBlendShapeFrame(pair[0], 100, new Vector3[4], null, null);
+                            p.renderers.Add(new RendererPlan { path = "", source = m, selected = true });
+                            AvatarAnalysis.Suggest(p);
+                            var left = p.mappings.First(x => x.key == "EyeClosedLeft"); var right = p.mappings.First(x => x.key == "EyeClosedRight");
+                            Check(left.shape == pair[0] && left.reason.Contains("MMD") && !left.confirmed, "MMD overrides SDK and exact key candidates");
+                            Check(!string.IsNullOrEmpty(right.shape) && right.shape != pair[0] && right.reason.Contains("SDK"), "missing opposite MMD side still uses SDK");
+                            m.AddBlendShapeFrame(pair[1], 100, new Vector3[4], null, null); AvatarAnalysis.Suggest(p);
+                            Check(right.shape == pair[1] && !right.confirmed, "right candidate uses original full/half-width shape name");
+                            Check(p.mappings.First(x => x.key == "JawOpen").shape == "jawOpen", "unrelated SDK mapping retained");
+                            var names = AvatarAnalysis.Shapes(p);
+                            Check(AvatarAnalysis.RankShapes(names, left.key, "vrc.blink_left")[0].name == pair[0], "recommended left starts with normal blink");
+                            Check(AvatarAnalysis.RankShapes(names.Reverse(), right.key, "vrc.blink_right")[0].name == pair[1], "recommended right starts with normal blink");
+                            root.AddComponent<SkinnedMeshRenderer>().sharedMesh = m;
+                            NativeSdk.Apply(p, root);
+                            var set = root.GetComponent<VRCAvatarDescriptor>().faceTrackingBlendshapesSetList.Last();
+                            Check(set.faceTrackingBlendshapeNames[(int)VRCAvatarDescriptor.FaceTrackingKey.EyeClosedLeft] == pair[0] &&
+                                set.faceTrackingBlendshapeNames[(int)VRCAvatarDescriptor.FaceTrackingKey.EyeClosedRight] == pair[1], "SDK receives original MMD names");
+                            left.shape = "EyeClosedLeft"; left.confirmed = true; left.reason = "手動指定";
+                            right.shape = "EyeClosedRight"; right.excluded = true;
+                            AvatarAnalysis.Suggest(p);
+                            Check(left.shape == "EyeClosedLeft" && left.confirmed && left.reason == "手動指定", "confirmed manual selection retained");
+                            Check(right.shape == "EyeClosedRight" && right.excluded, "exclusion retained");
+                        }
+                        finally { Object.DestroyImmediate(root); Object.DestroyImmediate(p); Object.DestroyImmediate(m); }
+                    }
+                });
                 Test(report, "候補は既定で使用・除外候補はSDK適用対象外", () =>
                 {
                     var root = new GameObject("DefaultCandidateFixture"); var p = ScriptableObject.CreateInstance<BuilderProfile>();
@@ -246,12 +304,12 @@ namespace FaceTrackingBuilder
                         }
                     Check(ExpressionDiagram.BrowPoint("BrowInnerUpRight", -1, true).y < ExpressionDiagram.BrowPoint("BrowInnerUpRight", 1, true).y, "intended unilateral movement retained");
                 });
-                Test(report, "任意生成の視線分割提案・左右・解析のみでは生成しない", () =>
+                Test(report, "任意生成の視線・MMD表情の分割提案・解析のみでは生成しない", () =>
                 {
                     var m = Object.Instantiate(mesh);
                     try
                     {
-                        foreach (string name in new[] { "LookRight", "LookLeft", "LookUp", "LookDown" }) m.AddBlendShapeFrame(name, 100, new Vector3[4], null, null);
+                        foreach (string name in new[] { "LookRight", "LookLeft", "LookUp", "LookDown", "困る", "にやり" }) m.AddBlendShapeFrame(name, 100, new Vector3[4], null, null);
                         var p = new RendererPlan { source = m };
                         foreach (string key in AvatarAnalysis.Keys.Where(k => k.StartsWith("EyeLook")))
                         {
@@ -261,6 +319,14 @@ namespace FaceTrackingBuilder
                             Check(suggestion.mode == (key.EndsWith("Right") ? GenerateMode.SplitRight : GenerateMode.SplitLeft), "side " + key);
                         }
                         Check(p.recipes.Count == 0, "suggestion must not generate or mutate");
+                        foreach (string key in new[] { "BrowInnerUpLeft", "BrowInnerUpRight", "MouthCornerPullLeft", "MouthCornerPullRight" })
+                        {
+                            var suggestion = ExpressionRecipes.Suggest(p, key);
+                            Check(suggestion != null && suggestion.source == (key.StartsWith("Brow") ? "困る" : "にやり"), "MMD source " + key);
+                            Check(suggestion.mode == (key.EndsWith("Right") ? GenerateMode.SplitRight : GenerateMode.SplitLeft), "bilateral MMD expression must be split " + key);
+                        }
+                        Check(p.recipes.Count == 0, "MMD suggestion must not create shapes without user action");
+                        Check(ExpressionRecipes.Suggest(p, "BrowOuterUpLeft") == null && ExpressionRecipes.Suggest(p, "MouthFrownRight") == null, "do not infer a different MMD movement");
                         Check(ExpressionRecipes.Suggest(p, "TongueRoll") == null, "no invented recipe");
                         Check(AvatarAnalysis.Keys.All(k => ExpressionGuide.Title(k) != k), "all SDK keys have Japanese titles");
                         Check(ExpressionGuide.Matches("EyeLookOutRight", "外側"), "Japanese search");
@@ -460,6 +526,15 @@ namespace FaceTrackingBuilder
                     {
                     var list = picker.Q<ListView>("shapeList"); var query = picker.Q<ToolbarSearchField>("shapeSearch");
                     Check(picker.Selected == "blink", "initial preview selection");
+                    var sort = picker.Q<PopupField<string>>("shapeSort");
+                    Check(sort.value == "おすすめ順", "recommended order is default");
+                    var recommended = list.itemsSource.Cast<string>().ToArray();
+                    sort.value = "名前順";
+                    Check(list.itemsSource.Cast<string>().SequenceEqual(recommended.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ThenBy(n => n, StringComparer.Ordinal)), "name order");
+                    Check(picker.Selected == "blink" && picker.Q<Button>("useShape").enabledSelf, "sorting preserves selected preview");
+                    sort.value = "おすすめ順";
+                    Check(list.itemsSource.Cast<string>().SequenceEqual(recommended) && picker.Selected == "blink", "recommended order restored without reselection");
+                    Check(accepted == null && EditorJsonUtility.ToJson(profile) == snapshot, "sorting is temporary");
                     query.value = "LookRight";
                     Check(list.itemsSource.Cast<string>().All(n => n.IndexOf("LookRight", StringComparison.OrdinalIgnoreCase) >= 0), "filtered list");
                     if (list.itemsSource.Count > 0) list.selectedIndex = 0;

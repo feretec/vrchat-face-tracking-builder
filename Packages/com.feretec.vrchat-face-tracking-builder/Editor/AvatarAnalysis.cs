@@ -12,10 +12,16 @@ namespace FaceTrackingBuilder
 {
     public static class AvatarAnalysis
     {
+        public sealed class ShapeCandidate
+        {
+            public string name;
+            public float similarity;
+        }
+
         static readonly Dictionary<string, string[]> Aliases = new Dictionary<string, string[]>
         {
-            { "EyeClosedLeft", new[] { "vrc.blink_left", "blink_L", "wink_L", "まばたき左", "ウィンク" } },
-            { "EyeClosedRight", new[] { "vrc.blink_right", "blink_R", "wink_R", "まばたき右", "ウィンク右" } },
+            { "EyeClosedLeft", new[] { "ウィンク2", "vrc.blink_left", "blink_L", "wink_L", "まばたき左", "ウィンク", "Eye_Blink_L", "EyeBlinkLeft", "eye_close_L", "eye_まばたき_L" } },
+            { "EyeClosedRight", new[] { "ウィンク2右", "vrc.blink_right", "blink_R", "wink_R", "まばたき右", "ウィンク右", "Eye_Blink_R", "EyeBlinkRight", "eye_close_R", "eye_まばたき_R" } },
             { "EyeWideLeft", new[] { "surprise_L", "びっくり左" } }, { "EyeWideRight", new[] { "surprise_R", "びっくり右" } },
             { "EyeSquintLeft", new[] { "jitome_L", "じと目左" } }, { "EyeSquintRight", new[] { "jitome_R", "じと目右" } },
             { "BrowLowererLeft", new[] { "mayu_down_L", "眉下げ左" } }, { "BrowLowererRight", new[] { "mayu_down_R", "眉下げ右" } },
@@ -90,6 +96,8 @@ namespace FaceTrackingBuilder
         public static string[] Shapes(BuilderProfile p) => p.renderers.Where(r => r.selected).SelectMany(r => Enumerable.Range(0, r.source.blendShapeCount).Select(r.source.GetBlendShapeName).Concat(r.recipes.Select(x => x.name))).Distinct().OrderBy(x => x).ToArray();
         static string Normalize(string s)
         {
+            if (string.IsNullOrEmpty(s)) return "";
+            s = s.Normalize(NormalizationForm.FormKC);
             s = s.ToLowerInvariant().Replace("左", "left").Replace("右", "right");
             s = Regex.Replace(s, "([_. -])l($|[_. -])", "$1left$2");
             s = Regex.Replace(s, "([_. -])r($|[_. -])", "$1right$2");
@@ -103,6 +111,33 @@ namespace FaceTrackingBuilder
             for (int i = 1; i <= a.Length; i++) { int previous = row[0]; row[0] = i; for (int j = 1; j <= b.Length; j++) { int old = row[j]; row[j] = Math.Min(Math.Min(row[j] + 1, row[j - 1] + 1), previous + (a[i - 1] == b[j - 1] ? 0 : 1)); previous = old; } }
             return 1f - (float)row[b.Length] / Math.Max(a.Length, b.Length);
         }
+        static string PreferredMmdBlink(IEnumerable<string> names, string key)
+        {
+            // Use the MMD naming convention consistently, including avatars with reversed geometry.
+            string alias = key == "EyeClosedLeft" ? "ウィンク2" : key == "EyeClosedRight" ? "ウィンク2右" : null;
+            return alias == null ? null : names
+                .Where(n => string.Equals(n.Normalize(NormalizationForm.FormKC), alias, StringComparison.Ordinal))
+                .OrderBy(n => n, StringComparer.Ordinal).FirstOrDefault();
+        }
+        public static ShapeCandidate[] RankShapes(IEnumerable<string> names, string key, string current)
+        {
+            var source = (names ?? Enumerable.Empty<string>()).Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.Ordinal).ToArray();
+            string preferred = PreferredMmdBlink(source, key);
+            var references = new List<string> { key ?? "" };
+            if (Aliases.TryGetValue(key ?? "", out var aliases)) references.AddRange(aliases);
+            if (!string.IsNullOrEmpty(current)) references.Add(current);
+            var normalizedReferences = references.Select(Normalize).Where(n => n.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
+            return source
+                .Select(n => new ShapeCandidate
+                {
+                    name = n,
+                    similarity = normalizedReferences.Length == 0 ? 0 : normalizedReferences.Max(reference => Similarity(n, reference))
+                })
+                .OrderByDescending(c => c.name == preferred)
+                .ThenByDescending(c => c.similarity)
+                .ThenBy(c => c.name, StringComparer.Ordinal)
+                .ToArray();
+        }
         public static void Suggest(BuilderProfile p)
         {
             var names = Shapes(p); var sdk = SdkFind;
@@ -112,13 +147,19 @@ namespace FaceTrackingBuilder
                 if (row != null && (row.confirmed || row.excluded)) continue;
                 if (row == null) { row = new TrackingMapping { key = key }; p.mappings.Add(row); }
                 row.shape = ""; row.confidence = 0; row.reason = "候補なし";
+                string mmdBlink = PreferredMmdBlink(names, key);
+                if (mmdBlink != null)
+                {
+                    row.shape = mmdBlink; row.confidence = .75f;
+                    row.reason = "MMDの通常目閉じ（ウィンク2）候補。プレビューで確認"; continue;
+                }
                 int index = -1;
                 if (sdk != null) index = (int)sdk.Invoke(null, new object[] { names, Enum.Parse(typeof(VRCAvatarDescriptor.FaceTrackingKey), key), "" });
                 if (index >= 0) { row.shape = names[index]; row.confidence = names[index] == key ? 1 : .9f; row.reason = "SDK Auto-Fill候補"; continue; }
                 if (names.Contains(key)) { row.shape = key; row.confidence = 1; row.reason = "完全一致"; continue; }
                 if (Aliases.TryGetValue(key, out var aliases))
                 {
-                    var alias = aliases.Select(a => names.FirstOrDefault(n => string.Equals(n, a, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(n => n != null);
+                    var alias = aliases.Select(a => names.FirstOrDefault(n => string.Equals(n.Normalize(NormalizationForm.FormKC), a.Normalize(NormalizationForm.FormKC), StringComparison.OrdinalIgnoreCase))).FirstOrDefault(n => n != null);
                     if (alias != null) { row.shape = alias; row.confidence = .75f; row.reason = "別名辞書による推定。プレビューで確認"; continue; }
                 }
                 var candidate = names.Where(n => Side(n) == Side(key)).Select(n => new { Name = n, Score = Similarity(n, key) }).OrderByDescending(n => n.Score).FirstOrDefault();
