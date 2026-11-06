@@ -54,7 +54,16 @@ namespace FaceTrackingBuilder
             catch (Exception ex) { EndPreview(); Notify("処理を中断しました: " + ex.Message); }
         }
         void Change(string title, Action action) { Undo.RecordObject(profile, title); action(); EditorUtility.SetDirty(profile); reviewedFingerprint = recipePreviewed = null; QueueRecipePreview(); }
-        Button Button(VisualElement parent, string text, Action action) { var b = new Button(() => Guard(action)) { text = text }; b.AddToClassList("action-button"); parent.Add(b); return b; }
+        Button Button(VisualElement parent, string text, Action action)
+        {
+            var b = new Button(() => Guard(action)) { text = text }; b.AddToClassList("action-button");
+            if (parent.ClassListContains("row") || parent.ClassListContains("choice-row"))
+            {
+                foreach (var sibling in parent.Children()) sibling.RemoveFromClassList("row-end");
+                b.AddToClassList("row-end");
+            }
+            parent.Add(b); return b;
+        }
         static VisualElement Row(VisualElement parent) { var row = new VisualElement(); row.AddToClassList("row"); parent.Add(row); return row; }
         static VisualElement Card(VisualElement parent) { var card = new VisualElement(); card.AddToClassList("card"); parent.Add(card); return card; }
         static void Text(VisualElement parent, string text, string css = "wrap") { var label = new Label(text); label.AddToClassList(css); parent.Add(label); }

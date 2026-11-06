@@ -26,7 +26,7 @@ namespace FaceTrackingBuilder
             }
             var columns = Column(content, "columns"); var left = Column(columns, "browser-column"); var right = Column(columns, "detail-column");
             var query = new ToolbarSearchField(); left.Add(query); var categoryField = new PopupField<string>("部位", Categories.ToList(), 0); left.Add(categoryField);
-            var list = new ListView { fixedItemHeight = 36, selectionType = SelectionType.Single }; list.AddToClassList("key-list"); left.Add(list);
+            var list = new ListView { selectionType = SelectionType.Single }; list.AddToClassList("key-list"); left.Add(list);
             list.makeItem = () => new Label(); list.bindItem = (item, i) => ((Label)item).text = ExpressionGuide.Title((string)list.itemsSource[i]);
             void Detail()
             {

@@ -117,10 +117,10 @@ namespace FaceTrackingBuilder
         }
         void SourceWeight(VisualElement parent, RendererPlan plan, ShapeSource input)
         {
-            var card = Card(parent); var row = Row(card);
-            Button(row, input.name + "  › 選び直す", () => PickShape(plan, input.name, value => Change("BlendShapeを変更", () => input.name = value))).AddToClassList("grow");
+            var card = Card(parent); card.AddToClassList("source-card"); var row = Row(card); row.AddToClassList("source-actions");
+            Button(row, input.name + "  › 選び直す", () => PickShape(plan, input.name, value => Change("BlendShapeを変更", () => input.name = value))).AddToClassList("source-name");
             Button(row, "外す", () => { Change("BlendShapeを除外", () => Recipe().sources.Remove(input)); RefreshContent(); });
-            var weight = Row(card); float value = input.coefficient * 100;
+            var weight = Row(card); weight.AddToClassList("source-weight-row"); float value = input.coefficient * 100;
             var slider = new Slider("強さ (%)", Mathf.Min(0, value), Mathf.Max(100, value)) { name = "sourceWeightSlider", value = value }; slider.AddToClassList("source-slider"); weight.Add(slider);
             var number = new FloatField { name = "sourceWeightNumber", value = value, isDelayed = true }; number.AddToClassList("source-percent"); weight.Add(number);
             bool syncing = false;

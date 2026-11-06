@@ -15,6 +15,8 @@ namespace FaceTrackingBuilder
         public GameObject Clone { get; private set; }
         public BuilderProfile Profile { get; }
         readonly Dictionary<string, Mesh> ownedMeshes = new Dictionary<string, Mesh>();
+        readonly Dictionary<string, string> meshDiagnostics = new Dictionary<string, string>();
+        readonly Dictionary<Renderer, bool> visibilityBeforeIsolation = new Dictionary<Renderer, bool>();
         readonly Dictionary<string, float[]> originalWeights = new Dictionary<string, float[]>();
         readonly Dictionary<string, float[]> compareWeights = new Dictionary<string, float[]>();
         readonly List<Material> previewMaterials = new List<Material>();
@@ -28,6 +30,8 @@ namespace FaceTrackingBuilder
         public SceneView View { get; private set; }
         public bool Comparing { get; private set; }
         public string Diagnostics { get; private set; }
+        public int GeometryRevision { get; private set; }
+        public bool OtherObjectsHidden => visibilityBeforeIsolation.Count > 0;
         public BuilderSession(BuilderProfile profile, bool includeGenerated = true, string previewShape = null, string previewPath = null)
         {
             Profile = profile;
@@ -107,17 +111,37 @@ namespace FaceTrackingBuilder
             View.sceneLighting = true; View.cameraMode = SceneView.GetBuiltinCameraMode(DrawCameraMode.TexturedWire); View.Show(); View.camera.scene = previewScene; return View;
         }
         public SkinnedMeshRenderer Renderer(RendererPlan plan) => AvatarAnalysis.Resolve(Clone, plan.path);
-        public void Rebuild()
+        public void SetIsolatedRenderer(RendererPlan plan)
+        {
+            if (!Clone || plan == null && !OtherObjectsHidden) return;
+            if (plan == null)
+            {
+                foreach (var item in visibilityBeforeIsolation) if (item.Key) item.Key.enabled = item.Value;
+                visibilityBeforeIsolation.Clear();
+            }
+            else
+            {
+                var target = Renderer(plan);
+                if (!target) throw new InvalidOperationException("編集対象のメッシュが見つかりません。");
+                foreach (var renderer in Clone.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (!visibilityBeforeIsolation.ContainsKey(renderer)) visibilityBeforeIsolation.Add(renderer, renderer.enabled);
+                    renderer.enabled = renderer == target && visibilityBeforeIsolation[renderer];
+                }
+            }
+            GeometryRevision++; View?.Repaint();
+        }
+        public void Rebuild(RendererPlan changedPlan = null)
         {
             if (!Clone) return;
-            var next = new Dictionary<string, Mesh>(); var logs = new List<string>();
+            var next = new Dictionary<string, Mesh>(); var logs = new Dictionary<string, string>();
             try
             {
                 if (includeGenerated)
-                    foreach (var plan in Profile.renderers.Where(r => r.recipes.Count > 0 && (previewPath == null || r.path == previewPath) &&
+                    foreach (var plan in Profile.renderers.Where(r => (changedPlan == null || r == changedPlan) && r.recipes.Count > 0 && (previewPath == null || r.path == previewPath) &&
                         (previewShape == null || r.recipes.Any(recipe => recipe.name == previewShape))))
-                    { next[plan.path] = MeshEngine.Build(plan, out var log, previewShape); logs.Add(log); }
-                foreach (var plan in Profile.renderers)
+                    { next[plan.path] = MeshEngine.Build(plan, out var log, previewShape); logs.Add(plan.path, log); }
+                foreach (var plan in Profile.renderers.Where(r => changedPlan == null || r == changedPlan))
                 {
                     var r = AvatarAnalysis.Resolve(Clone, plan.path);
                     var weights = new Dictionary<string, float>();
@@ -125,9 +149,11 @@ namespace FaceTrackingBuilder
                     r.sharedMesh = next.TryGetValue(plan.path, out var built) ? built : plan.source;
                     for (int i = 0; i < r.sharedMesh.blendShapeCount; i++) r.SetBlendShapeWeight(i, weights.TryGetValue(r.sharedMesh.GetBlendShapeName(i), out var value) ? value : 0);
                 }
-                foreach (var mesh in ownedMeshes.Values) Object.DestroyImmediate(mesh);
-                ownedMeshes.Clear(); foreach (var item in next) ownedMeshes.Add(item.Key, item.Value);
-                Diagnostics = string.Join("\n", logs); SceneView.RepaintAll();
+                foreach (var path in ownedMeshes.Keys.Where(p => changedPlan == null || p == changedPlan.path).ToArray())
+                { Object.DestroyImmediate(ownedMeshes[path]); ownedMeshes.Remove(path); meshDiagnostics.Remove(path); }
+                foreach (var item in next) ownedMeshes.Add(item.Key, item.Value);
+                foreach (var path in next.Keys) meshDiagnostics[path] = logs[path];
+                Diagnostics = string.Join("\n", meshDiagnostics.Values); GeometryRevision++; View?.Repaint();
             }
             catch { foreach (var mesh in next.Values) if (!ownedMeshes.ContainsValue(mesh)) Object.DestroyImmediate(mesh); throw; }
         }
@@ -135,8 +161,9 @@ namespace FaceTrackingBuilder
         {
             if (!Clone) return;
             var r = AvatarAnalysis.Resolve(Clone, path); int i = r.sharedMesh.GetBlendShapeIndex(shape);
-            if (i >= 0) r.SetBlendShapeWeight(i, Mathf.Clamp(value, 0, 100));
-            SceneView.RepaintAll();
+            if (i >= 0 && r.GetBlendShapeWeight(i) != Mathf.Clamp(value, 0, 100))
+            { r.SetBlendShapeWeight(i, Mathf.Clamp(value, 0, 100)); GeometryRevision++; }
+            View?.Repaint();
         }
         public void ResetWeights()
         {
@@ -149,7 +176,7 @@ namespace FaceTrackingBuilder
                 originalWeights.TryGetValue(path, out var values);
                 for (int i = 0; i < r.sharedMesh.blendShapeCount; i++) r.SetBlendShapeWeight(i, values != null && i < values.Length ? values[i] : 0);
             }
-            SceneView.RepaintAll();
+            GeometryRevision++; View?.Repaint();
         }
         public void Compare(bool before)
         {
@@ -160,7 +187,7 @@ namespace FaceTrackingBuilder
                 if (before) { compareWeights[plan.path] = Enumerable.Range(0, r.sharedMesh.blendShapeCount).Select(r.GetBlendShapeWeight).ToArray(); for (int i = 0; i < r.sharedMesh.blendShapeCount; i++) r.SetBlendShapeWeight(i, 0); }
                 else if (compareWeights.TryGetValue(plan.path, out var values)) for (int i = 0; i < Math.Min(values.Length, r.sharedMesh.blendShapeCount); i++) r.SetBlendShapeWeight(i, values[i]);
             }
-            Comparing = before; SceneView.RepaintAll();
+            Comparing = before; GeometryRevision++; View?.Repaint();
         }
         public RenderTexture RenderPortrait(float yaw = 0, float zoom = 1)
         {
@@ -188,6 +215,7 @@ namespace FaceTrackingBuilder
         }
         public void Dispose()
         {
+            SetIsolatedRenderer(null);
             AssemblyReloadEvents.beforeAssemblyReload -= Dispose;
             EditorApplication.playModeStateChanged -= PlayMode;
             EditorApplication.quitting -= Dispose;

@@ -5,6 +5,12 @@
 !/.gitattributes
 !/README.md
 !/index.json
+!/docs/
+/docs/*
+!/docs/images/
+/docs/images/*
+!/docs/images/setup.png
+!/docs/images/expression-editor.png
 !/.github/
 !/.github/**
 !/Packages/

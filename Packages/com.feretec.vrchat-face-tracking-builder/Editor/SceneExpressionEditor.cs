@@ -18,6 +18,7 @@ namespace FaceTrackingBuilder
         public bool pointerOverControls;
         SceneBrushPanel controls;
         public SceneBrushPanel Controls => controls;
+        public bool HideOtherObjects => session != null && session.OtherObjectsHidden;
         public bool CanEdit => enabled && session?.Clone != null && !session.Comparing && recipe != null && string.IsNullOrEmpty(recipe.mirrorOf);
         int control, undoGroup = -1;
         Mesh baked;
@@ -25,10 +26,18 @@ namespace FaceTrackingBuilder
         int[] mirrorPairs;
         Vector3[] baseVertices;
         public SceneExpressionEditor() { SceneView.beforeSceneGui += BeforeSelectionGUI; SceneView.duringSceneGui += Draw; Undo.undoRedoPerformed += SelectionUndoRedo; }
-        public void Invalidate() { EndSelectionInteraction(false); skinMatrices = null; mirrorPairs = null; InvalidateSelectionGeometry(); }
-        public void Dispose() { EndSelectionInteraction(false); DisposeSelection(); controls?.Dispose(); controls = null; SceneView.beforeSceneGui -= BeforeSelectionGUI; SceneView.duringSceneGui -= Draw; Undo.undoRedoPerformed -= SelectionUndoRedo; if (baked) UnityEngine.Object.DestroyImmediate(baked); baked = null; }
+        public void Invalidate() { EndSelectionInteraction(false); if (HideOtherObjects) session.SetIsolatedRenderer(plan); skinMatrices = null; mirrorPairs = null; surfaceCache.Clear(); surfaceStates.Clear(); surfaceMeshes.Clear(); pointDisplay.InvalidateOccluders(); InvalidateSelectionGeometry(); }
+        public void Dispose() { EndSelectionInteraction(false); session?.SetIsolatedRenderer(null); DisposeSelection(); controls?.Dispose(); controls = null; SceneView.beforeSceneGui -= BeforeSelectionGUI; SceneView.duringSceneGui -= Draw; Undo.undoRedoPerformed -= SelectionUndoRedo; if (baked) UnityEngine.Object.DestroyImmediate(baked); baked = null; }
+        public void SetHideOtherObjects(bool value)
+        {
+            EndSelectionInteraction(false);
+            if (session?.Clone == null) return;
+            session.SetIsolatedRenderer(value ? plan : null);
+            InvalidateSelectionGeometry(); controls?.Refresh(); displayChanged?.Invoke();
+        }
         public void ShowControls()
         {
+            if (HideOtherObjects) session.SetIsolatedRenderer(plan);
             var view = session.ShowView();
             if (controls == null || controls.View != view) { controls?.Dispose(); controls = new SceneBrushPanel(this, view); }
             controls.Refresh();
@@ -41,6 +50,8 @@ namespace FaceTrackingBuilder
             skinMatrices = Enumerable.Repeat(r.localToWorldMatrix, baseVertices.Length).ToArray();
             var bindposes = plan.source.bindposes; var bones = r.bones;
             if (bindposes.Length == 0 || bones.Length == 0) return;
+            var boneMatrices = new Matrix4x4[Math.Min(bindposes.Length, bones.Length)];
+            for (int b = 0; b < boneMatrices.Length; b++) if (bones[b]) boneMatrices[b] = bones[b].localToWorldMatrix * bindposes[b];
             var perVertex = plan.source.GetBonesPerVertex(); var all = plan.source.GetAllBoneWeights();
             try
             {
@@ -53,7 +64,7 @@ namespace FaceTrackingBuilder
                     {
                         var bw = all[cursor++]; int b = bw.boneIndex;
                         if (b >= bones.Length || b >= bindposes.Length || !bones[b]) continue;
-                        var bm = bones[b].localToWorldMatrix * bindposes[b];
+                        var bm = boneMatrices[b];
                         for (int k = 0; k < 16; k++) m[k] += bm[k] * bw.weight;
                         total += bw.weight;
                     }
@@ -155,7 +166,11 @@ namespace FaceTrackingBuilder
             }
             Commit();
         }
-        void Commit() { EditorUtility.SetDirty(session.Profile); session.Rebuild(); session.Weight(plan.path, recipe.name, 100); InvalidateSelectionGeometry(); changed?.Invoke(); }
+        void Commit()
+        {
+            EditorUtility.SetDirty(session.Profile); session.Rebuild(plan); session.Weight(plan.path, recipe.name, 100);
+            InvalidateSelectionGeometry(); if (transformGesture == null) changed?.Invoke();
+        }
         static bool Hit(Ray ray, Vector3[] v, int[] triangles, out Vector3 point, out Vector3 normal, out int nearest)
         {
             float closest = float.MaxValue; point = Vector3.zero; normal = Vector3.up; nearest = 0;

@@ -103,7 +103,7 @@ namespace FaceTrackingBuilder
             var query = new ToolbarSearchField { name = "mappingSearch", value = search }; left.Add(query);
             var filter = new PopupField<string>("部位", Categories.ToList(), Categories.Contains(category) ? category : "すべて"); left.Add(filter);
             var all = new Toggle("割り当てのない項目も表示"); left.Add(all);
-            var list = new ListView { name = "mappingList", fixedItemHeight = 48, selectionType = SelectionType.Single }; list.AddToClassList("mapping-list"); left.Add(list);
+            var list = new ListView { name = "mappingList", selectionType = SelectionType.Single }; list.AddToClassList("mapping-list"); left.Add(list);
             ExpressionListNavigation.EnableArrowKeys(list);
             list.makeItem = () =>
             {

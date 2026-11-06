@@ -33,6 +33,20 @@ namespace FaceTrackingBuilder
             EditorApplication.CallbackFunction tick = null;
             void Check(bool condition, string name)
             { report.results.Add(new BuilderVerification.Result { name = name, passed = condition, detail = condition ? "OK" : "Failed" }); }
+            void CheckSourceRows(string size)
+            {
+                var rows = window.rootVisualElement.Query(className: "source-weight-row").ToList();
+                var viewport = scroll.contentViewport.worldBound;
+                Check(rows.Count > 0 && rows.All(row =>
+                {
+                    var slider = row.Q<Slider>(); var numberField = row.Q<FloatField>();
+                    return slider.worldBound.width > 100 && slider.worldBound.xMin >= row.worldBound.xMin - 1 &&
+                        numberField.worldBound.xMax <= row.worldBound.xMax + 1 && numberField.worldBound.xMax <= viewport.xMax + 1 &&
+                        Mathf.Abs(slider.worldBound.center.y - numberField.worldBound.center.y) < 1 &&
+                        Mathf.Abs(numberField.worldBound.xMin - slider.worldBound.xMax - 8) < 1 &&
+                        Mathf.Abs(numberField.worldBound.width - 64) < 1;
+                }), size + "で強さバーと数値欄が同じ行に収まる・余白と数値幅が共通");
+            }
             void Finish()
             {
                 EditorApplication.update -= tick;
@@ -49,6 +63,7 @@ namespace FaceTrackingBuilder
                     if (stage == 0)
                     {
                         var root = window.rootVisualElement;
+                        CheckSourceRows("通常幅");
                         Check(root.Query<Button>().ToList().All(b => b.text != "プレビューを開始" && b.text != "この表情を編集") &&
                             root.Query<Foldout>().ToList().All(f => !f.text.Contains("SceneView") && !f.text.Contains("複数同時プレビュー")), "重複する開始操作・折りたたみ編集メニューを廃止");
                         Check(root.Q<Button>("editFromBlendShapes") != null && root.Q<Button>("openBrushEditor").enabledSelf &&
@@ -68,6 +83,11 @@ namespace FaceTrackingBuilder
                     if (stage == 1)
                     {
                         var panel = editor.Controls.Root; var view = editor.session.View;
+                        var buttonRows = panel.Query(className: "choice-row").ToList().Where(row => row.worldBound.width > 0).ToArray();
+                        Check(buttonRows.All(row => Mathf.Abs(row.Children().Last().worldBound.xMax - row.worldBound.xMax) < 1), "編集パネルの各ボタン行に余分な右余白がない");
+                        var radiusSlider = panel.Q<Slider>("brushRadius");
+                        Check(radiusSlider.Q(className: "unity-base-slider__text-field").worldBound.xMin - radiusSlider.Q("unity-drag-container").worldBound.xMax >= 11,
+                            "編集パネルのスライダーにも数値欄との余白を確保");
                         Check(view.titleContent.text == "表情の編集" && panel.panel != null && panel.Query<Foldout>().ToList().Count == 0, "専用ウィンドウに折りたたみなしのブラシUI");
                         Check(panel.worldBound.width >= 240 && panel.worldBound.height > 250 && panel.worldBound.xMin >= view.rootVisualElement.worldBound.xMin &&
                             panel.worldBound.xMax <= view.rootVisualElement.worldBound.xMax + 1 && panel.worldBound.yMax <= view.rootVisualElement.worldBound.yMax + 1, "ブラシパネルが編集ウィンドウ内に収まる");
@@ -80,6 +100,30 @@ namespace FaceTrackingBuilder
                         Check(view.cameraMode.drawMode == DrawCameraMode.TexturedWire, "ワイヤー重ね表示"); modes.index = 2;
                         Check(view.cameraMode.drawMode == DrawCameraMode.Wireframe, "ワイヤーのみ表示"); modes.index = 0;
                         Check(view.cameraMode.drawMode == DrawCameraMode.Textured && oldViews.All(v => !v.Key || v.Key.cameraMode.Equals(v.Value)), "通常表示への復帰・他のSceneViewは変更しない");
+                        var isolate = panel.Q<Toggle>("hideOtherObjects");
+                        Check(isolate != null && !isolate.value && !editor.HideOtherObjects, "他のオブジェクトを非表示は初期状態でOFF");
+                        var sourceVisibility = profile.sourceAvatar.GetComponentsInChildren<Renderer>(true).ToDictionary(r => r, r => r.enabled);
+                        var targetRenderer = editor.session.Renderer(plan);
+                        var cloneRenderers = editor.session.Clone.GetComponentsInChildren<Renderer>(true);
+                        var disabledRenderer = cloneRenderers.First(r => r != targetRenderer && r.enabled);
+                        disabledRenderer.enabled = false;
+                        var beforeIsolation = cloneRenderers.ToDictionary(r => r, r => r.enabled);
+                        isolate.value = true;
+                        Check(targetRenderer.enabled && cloneRenderers.Where(r => r != targetRenderer).All(r => !r.enabled) &&
+                            sourceVisibility.All(r => r.Key.enabled == r.Value), "編集中のメッシュだけ表示・元アバターを変更しない");
+                        typeof(SceneExpressionEditor).GetMethod("EnsureSelectionGeometry", Flags).Invoke(editor, null);
+                        typeof(SceneExpressionEditor).GetMethod("EnsureOccluders", Flags).Invoke(editor, null);
+                        var pickSurfaces = (System.Collections.Generic.List<VertexPickSurface>)typeof(SceneExpressionEditor).GetField("surfaces", Flags).GetValue(editor);
+                        Check(pickSurfaces.Count == 1, "非表示メッシュを頂点の遮蔽判定から除外");
+                        editor.SetSelectionMode(true); editor.session.Rebuild(plan);
+                        Check(editor.HideOtherObjects && cloneRenderers.Where(r => r != targetRenderer).All(r => !r.enabled), "選択編集への切り替え・再生成後も表示設定を保持");
+                        editor.SetSelectionMode(false);
+                        var nextPlan = profile.renderers.First(p => p != plan && beforeIsolation[editor.session.Renderer(p)]);
+                        editor.plan = nextPlan; editor.Invalidate();
+                        Check(editor.session.Renderer(nextPlan).enabled && !targetRenderer.enabled, "編集対象の変更に合わせて表示メッシュを切り替える");
+                        editor.plan = plan; editor.Invalidate(); isolate.value = false;
+                        Check(!editor.HideOtherObjects && beforeIsolation.All(r => r.Key.enabled == r.Value), "OFFで元の表示状態へ復元・元から非表示のメッシュは非表示を維持");
+                        disabledRenderer.enabled = true;
                         editor.Compare(true);
                         Check(!editor.CanEdit && !panel.Q("brushEditingControls").enabledSelf && panel.Q<Button>("showNeutral").ClassListContains("selected-choice") &&
                             window.rootVisualElement.Q<Label>("recipeDisplayState").text == "元の顔を表示中", "比較状態を両画面に表示・元の顔へのブラシ操作を無効化");
@@ -101,13 +145,23 @@ namespace FaceTrackingBuilder
                     if (stage == 3)
                     {
                         Check(Vector2.Distance(scroll.scrollOffset, scrollBefore) < 1, "画面再構築後のスクロール復元");
+                        recipe.sources.Add(new ShapeSource { name = recipe.sources[0].name, coefficient = -.25f });
+                        type.GetMethod("RefreshContent", Flags).Invoke(window, null);
                         window.rootVisualElement.style.width = 700; stage++; next = EditorApplication.timeSinceStartup + .3; return;
                     }
-                    var rootBounds = window.rootVisualElement.worldBound;
-                    var methods = window.rootVisualElement.Q("editingMethods").worldBound;
-                    var brush = window.rootVisualElement.Q<Button>("openBrushEditor").worldBound;
-                    Check(methods.yMax + 6 <= brush.yMin && brush.xMax <= rootBounds.xMax && brush.xMin >= methods.xMin - 1,
-                        "幅700でもブラシは切り替えボタンの下の別行に表示");
+                    CheckSourceRows(stage == 4 ? "幅700・複数BlendShape" : "幅1400への再拡大");
+                    if (stage == 4)
+                    {
+                        var rootBounds = window.rootVisualElement.worldBound;
+                        var methods = window.rootVisualElement.Q("editingMethods").worldBound;
+                        var brush = window.rootVisualElement.Q<Button>("openBrushEditor").worldBound;
+                        Check(methods.yMax + 6 <= brush.yMin && brush.xMax <= rootBounds.xMax && brush.xMin >= methods.xMin - 1,
+                            "幅700でもブラシは切り替えボタンの下の別行に表示");
+                        window.rootVisualElement.style.width = 1400; stage++; next = EditorApplication.timeSinceStartup + .3; return;
+                    }
+                    var visibleBeforeClose = editor.session.Clone.GetComponentsInChildren<Renderer>(true).ToDictionary(r => r, r => r.enabled);
+                    editor.Controls.Root.Q<Toggle>("hideOtherObjects").value = true; editor.session.View.Close();
+                    Check(!editor.HideOtherObjects && visibleBeforeClose.All(r => r.Key.enabled == r.Value), "編集ウィンドウを閉じたら他オブジェクトの表示を復元");
                     Finish();
                 }
                 catch (Exception ex)

@@ -204,9 +204,11 @@ namespace FaceTrackingBuilder
             if (inverseSkin.Length != world.Length || weights.Length != world.Length || originalSculpt.Length != world.Length)
                 throw new InvalidOperationException("編集対象の頂点構造が変わりました。編集を開き直してください。");
             var delta = new Vector3[world.Length]; var result = (Vector3[])originalSculpt.Clone();
+            var inverseAxes = Quaternion.Inverse(axes);
             for (int i = 0; i < world.Length; i++)
             {
-                Vector3 relative = Quaternion.Inverse(axes) * (world[i] - pivot);
+                if (weights[i] == 0) continue;
+                Vector3 relative = inverseAxes * (world[i] - pivot);
                 Vector3 target = pivot + translation + rotation * (axes * Vector3.Scale(relative, scale));
                 delta[i] = inverseSkin[i].MultiplyVector((target - world[i]) * weights[i]);
             }
@@ -308,6 +310,27 @@ namespace FaceTrackingBuilder
         {
             distance = limit; vertex = -1; if (nodes.Count > 0) Visit(0, ray, ref distance, ref vertex); return vertex >= 0;
         }
+        public bool Occludes(Ray ray, float limit) => nodes.Count > 0 && Occludes(0, ray, limit);
+        bool Occludes(int index, Ray ray, float limit)
+        {
+            var node = nodes[index];
+            if (!node.bounds.IntersectRay(ray, out float entry) || entry > limit) return false;
+            if (node.left >= 0) return Occludes(node.left, ray, limit) || Occludes(node.right, ray, limit);
+            for (int i = node.start; i < node.start + node.count; i++)
+            {
+                int t = order[i] * 3; var a = vertices[triangles[t]];
+                var e1 = vertices[triangles[t + 1]] - a; var e2 = vertices[triangles[t + 2]] - a;
+                var p = Vector3.Cross(ray.direction, e2); float det = Vector3.Dot(e1, p);
+                if (Mathf.Abs(det) < 1e-12f) continue;
+                var relative = ray.origin - a; float u = Vector3.Dot(relative, p) / det;
+                if (u < -.00001f || u > 1.00001f) continue;
+                var q = Vector3.Cross(relative, e1); float v = Vector3.Dot(ray.direction, q) / det;
+                if (v < -.00001f || u + v > 1.00001f) continue;
+                float distance = Vector3.Dot(e2, q) / det;
+                if (distance >= 0 && distance < limit) return true;
+            }
+            return false;
+        }
         void Visit(int index, Ray ray, ref float closest, ref int nearest)
         {
             var node = nodes[index]; if (!node.bounds.IntersectRay(ray, out float entry) || entry > closest) return;
@@ -332,7 +355,7 @@ namespace FaceTrackingBuilder
             float distance = Vector3.Dot(vertex - ray.origin, ray.direction);
             if (distance <= 0) return false;
             float limit = distance - Mathf.Max(.00001f, distance * .00001f);
-            foreach (var surface in surfaces) if (surface.Hit(ray, limit, out _, out _)) return false;
+            foreach (var surface in surfaces) if (surface.Occludes(ray, limit)) return false;
             return true;
         }
     }

@@ -22,13 +22,19 @@ namespace FaceTrackingBuilder
         Vector2 altLoopStart;
         public string SelectionNotice { get; private set; } = "";
         bool graphJoined, geometryDirty = true, projectionDirty = true;
+        bool occludersDirty = true, markersDirty = true;
+        int geometryRevision = -1, selectedCount = -1;
+        readonly VertexPointDisplay pointDisplay = new VertexPointDisplay();
         Vector3[] selectionWorld;
         Vector2[] screenPoints;
-        bool[] eligible;
+        bool[] eligible, inViewport;
+        byte[] visibility;
         float[] screenDepth;
         VertexPickSurface targetSurface;
         readonly List<VertexPickSurface> surfaces = new List<VertexPickSurface>();
         readonly Dictionary<int, VertexPickSurface> surfaceCache = new Dictionary<int, VertexPickSurface>();
+        readonly Dictionary<int, int> surfaceStates = new Dictionary<int, int>();
+        readonly Dictionary<int, Mesh> surfaceMeshes = new Dictionary<int, Mesh>();
         Matrix4x4 lastCamera, lastProjection;
         Rect lastPixelRect;
         float lastPixelsPerPoint;
@@ -44,7 +50,7 @@ namespace FaceTrackingBuilder
         readonly HashSet<int> gestureVisited = new HashSet<int>();
         TransformGesture transformGesture;
         public int SelectionRevision { get; private set; }
-        public int SelectedCount => selection ? selection.selected.Count(value => value) : 0;
+        public int SelectedCount => !selection ? 0 : selectedCount >= 0 ? selectedCount : (selectedCount = selection.selected.Count(value => value));
         public bool TransformInProgress => transformGesture != null;
         public Quaternion SelectionAxes => avatarAxes ? session.Clone.transform.rotation : Quaternion.identity;
         public Vector3 SelectionCenter { get { EnsureSelectionGeometry(); return VertexEditGeometry.Center(selectionWorld, selection.selected); } }
@@ -53,6 +59,7 @@ namespace FaceTrackingBuilder
 
         sealed class TransformGesture
         {
+            public VertexTransformPreview preview;
             public int undo, control;
             public Vector3[] world, sculpt;
             public Matrix4x4[] inverseSkin;
@@ -71,8 +78,9 @@ namespace FaceTrackingBuilder
             if (selection.target == target && selection.selected.Length == plan.source.vertexCount) return;
             EndSelectionInteraction(false); Undo.ClearUndo(selection);
             selection.target = target; selection.selected = new bool[plan.source.vertexCount]; graph = null; loopTopology = null;
+            selectedCount = 0;
             SelectionNotice = ""; altLoopPending = false;
-            surfaceCache.Clear();
+            surfaceCache.Clear(); surfaceStates.Clear(); surfaceMeshes.Clear(); pointDisplay.InvalidateOccluders();
             skinMatrices = null; mirrorPairs = null; InvalidateSelectionGeometry();
         }
         void EnsureSelectionGeometry()
@@ -83,34 +91,60 @@ namespace FaceTrackingBuilder
                 graph = new VertexGraph(plan.source.vertices, plan.source.triangles, joinCoincident); graphJoined = joinCoincident;
                 selectionWeights = null;
             }
+            if (geometryRevision != session.GeometryRevision) geometryDirty = true;
             if (!geometryDirty) return;
-            var renderer = session.Renderer(plan); skinMatrices = null; Prepare(renderer);
+            var renderer = session.Renderer(plan);
             if (!baked) baked = new Mesh(); renderer.BakeMesh(baked);
             selectionWorld = baked.vertices.Select(renderer.transform.TransformPoint).ToArray();
-            targetSurface = CaptureSurface(renderer.GetInstanceID(), selectionWorld, baked); surfaces.Clear(); surfaces.Add(targetSurface);
+            targetSurface = CaptureSurface(renderer.GetInstanceID(), selectionWorld, plan.source);
+            geometryDirty = false; projectionDirty = occludersDirty = markersDirty = true; selectionWeights = null;
+            geometryRevision = session.GeometryRevision;
+        }
+        void EnsureOccluders()
+        {
+            if (!occludersDirty) return;
+            var renderer = session.Renderer(plan);
+            surfaces.Clear(); surfaces.Add(targetSurface);
             var temporary = new Mesh();
             try
             {
                 foreach (var other in session.Clone.GetComponentsInChildren<SkinnedMeshRenderer>())
                 {
                     if (other == renderer || !other.enabled || !other.sharedMesh || !other.gameObject.activeInHierarchy) continue;
-                    other.BakeMesh(temporary);
-                    surfaces.Add(CaptureSurface(other.GetInstanceID(), temporary.vertices.Select(other.transform.TransformPoint).ToArray(), temporary));
+                    int state = SurfaceState(other, other.sharedMesh);
+                    for (int i = 0; i < other.sharedMesh.blendShapeCount; i++) state = unchecked(state * 31 + other.GetBlendShapeWeight(i).GetHashCode());
+                    foreach (var bone in other.bones) if (bone) state = unchecked(state * 31 + bone.localToWorldMatrix.GetHashCode());
+                    int id = other.GetInstanceID();
+                    if (!surfaceStates.TryGetValue(id, out int previous) || previous != state)
+                    {
+                        other.BakeMesh(temporary);
+                        CaptureSurface(id, temporary.vertices.Select(other.transform.TransformPoint).ToArray(), other.sharedMesh);
+                        surfaceStates[id] = state;
+                    }
+                    surfaces.Add(surfaceCache[id]);
                 }
                 foreach (var other in session.Clone.GetComponentsInChildren<MeshRenderer>())
                 {
                     var filter = other.GetComponent<MeshFilter>();
                     if (!other.enabled || !other.gameObject.activeInHierarchy || !filter || !filter.sharedMesh) continue;
-                    surfaces.Add(CaptureSurface(other.GetInstanceID(), filter.sharedMesh.vertices.Select(other.transform.TransformPoint).ToArray(), filter.sharedMesh));
+                    int id = other.GetInstanceID(), state = SurfaceState(other, filter.sharedMesh);
+                    if (!surfaceStates.TryGetValue(id, out int previous) || previous != state)
+                    {
+                        CaptureSurface(id, filter.sharedMesh.vertices.Select(other.transform.TransformPoint).ToArray(), filter.sharedMesh);
+                        surfaceStates[id] = state;
+                    }
+                    surfaces.Add(surfaceCache[id]);
                 }
             }
             finally { UnityEngine.Object.DestroyImmediate(temporary); }
-            geometryDirty = false; projectionDirty = true; selectionWeights = null;
+            occludersDirty = false;
         }
+        static int SurfaceState(Renderer renderer, Mesh mesh) => unchecked(mesh.GetInstanceID() * 31 + renderer.localToWorldMatrix.GetHashCode());
         VertexPickSurface CaptureSurface(int rendererId, Vector3[] world, Mesh mesh)
         {
-            if (surfaceCache.TryGetValue(rendererId, out var surface) && surface.VertexCount == world.Length) surface.Refit(world);
+            if (surfaceCache.TryGetValue(rendererId, out var surface) && surface.VertexCount == world.Length && surfaceMeshes.TryGetValue(rendererId, out var source) && source == mesh) surface.Refit(world);
             else surfaceCache[rendererId] = surface = new VertexPickSurface(world, mesh.triangles);
+            surfaceMeshes[rendererId] = mesh;
             return surface;
         }
         void EnsureSelectionProjection(SceneView view)
@@ -118,18 +152,30 @@ namespace FaceTrackingBuilder
             var camera = view.camera;
             if (!projectionDirty && lastCamera == camera.worldToCameraMatrix && lastProjection == camera.projectionMatrix &&
                 lastPixelRect == camera.pixelRect && lastPixelsPerPoint == EditorGUIUtility.pixelsPerPoint && lastThrough == selectThrough) return;
-            screenPoints = new Vector2[selectionWorld.Length]; eligible = new bool[selectionWorld.Length]; screenDepth = new float[selectionWorld.Length];
+            if (screenPoints == null || screenPoints.Length != selectionWorld.Length)
+            {
+                screenPoints = new Vector2[selectionWorld.Length]; eligible = new bool[selectionWorld.Length]; screenDepth = new float[selectionWorld.Length];
+                inViewport = new bool[selectionWorld.Length]; visibility = new byte[selectionWorld.Length];
+            }
+            var bottomLeft = HandleUtility.WorldToGUIPoint(camera.ViewportToWorldPoint(new Vector3(0, 0, 1)));
+            VertexProjection.Project(selectionWorld, camera, bottomLeft, EditorGUIUtility.pixelsPerPoint, screenPoints, screenDepth, inViewport);
+            Array.Copy(inViewport, eligible, eligible.Length); Array.Clear(visibility, 0, visibility.Length);
+            lastCamera = camera.worldToCameraMatrix; lastProjection = camera.projectionMatrix; lastPixelRect = camera.pixelRect;
+            lastPixelsPerPoint = EditorGUIUtility.pixelsPerPoint; lastThrough = selectThrough; projectionDirty = false; markersDirty = true;
+        }
+        void EnsureSelectionVisibility(Rect region)
+        {
+            if (selectThrough) return;
+            EnsureOccluders();
             for (int i = 0; i < selectionWorld.Length; i++)
             {
-                var viewport = camera.WorldToViewportPoint(selectionWorld[i]);
-                screenDepth[i] = viewport.z;
-                screenPoints[i] = HandleUtility.WorldToGUIPoint(selectionWorld[i]);
-                if (viewport.z <= camera.nearClipPlane || viewport.z >= camera.farClipPlane || viewport.x < 0 || viewport.x > 1 || viewport.y < 0 || viewport.y > 1) continue;
-                eligible[i] = selectThrough || VertexPickSurface.Visible(HandleUtility.GUIPointToWorldRay(screenPoints[i]), selectionWorld[i], surfaces);
+                if (!inViewport[i] || visibility[i] != 0 || !region.Contains(screenPoints[i])) continue;
+                eligible[i] = VertexPickSurface.Visible(HandleUtility.GUIPointToWorldRay(screenPoints[i]), selectionWorld[i], surfaces);
+                visibility[i] = (byte)(eligible[i] ? 1 : 2);
             }
-            lastCamera = camera.worldToCameraMatrix; lastProjection = camera.projectionMatrix; lastPixelRect = camera.pixelRect;
-            lastPixelsPerPoint = EditorGUIUtility.pixelsPerPoint; lastThrough = selectThrough; projectionDirty = false;
         }
+        static Rect SelectionRegion(Vector2 a, Vector2 b, float padding) => Rect.MinMaxRect(
+            Mathf.Min(a.x, b.x) - padding, Mathf.Min(a.y, b.y) - padding, Mathf.Max(a.x, b.x) + padding, Mathf.Max(a.y, b.y) + padding);
         float[] SelectionWeights()
         {
             if (transformGesture != null) return transformGesture.weights;
@@ -140,10 +186,10 @@ namespace FaceTrackingBuilder
             }
             return selectionWeights;
         }
-        void InvalidateSelectionGeometry() { geometryDirty = projectionDirty = true; selectionWeights = null; SelectionRevision++; session?.View?.Repaint(); }
+        void InvalidateSelectionGeometry() { geometryDirty = projectionDirty = occludersDirty = markersDirty = true; selectionWeights = null; SelectionRevision++; session?.View?.Repaint(); }
         void SelectionUndoRedo()
         {
-            EndSelectionInteraction(false); skinMatrices = null; mirrorPairs = null; InvalidateSelectionGeometry();
+            EndSelectionInteraction(false); selectedCount = -1; skinMatrices = null; mirrorPairs = null; surfaceStates.Clear(); InvalidateSelectionGeometry();
             if (session?.Clone == null || plan == null || recipe == null) return;
             string path = plan.path, id = recipe.id;
             plan = session.Profile.renderers.FirstOrDefault(p => p.path == path); recipe = plan?.recipes.FirstOrDefault(r => r.id == id);
@@ -152,7 +198,7 @@ namespace FaceTrackingBuilder
             catch (Exception ex) { enabled = false; failed?.Invoke(ex); }
         }
         public void SelectionSettingsChanged(bool coordinatesChanged = false)
-        { EndSelectionInteraction(false); selectionWeights = null; projectionDirty = true; if (coordinatesChanged) SelectionRevision++; session?.View?.Repaint(); controls?.Refresh(); }
+        { EndSelectionInteraction(false); selectionWeights = null; markersDirty = true; if (coordinatesChanged) SelectionRevision++; session?.View?.Repaint(); controls?.Refresh(); }
         public void SetCoincidentSelection(bool value)
         {
             joinCoincident = value; graph = null;
@@ -173,7 +219,7 @@ namespace FaceTrackingBuilder
             if (next.SequenceEqual(selection.selected)) return;
             Undo.IncrementCurrentGroup(); Undo.RegisterCompleteObjectUndo(selection, "頂点の選択"); selection.selected = next; SelectionChanged(); Undo.IncrementCurrentGroup();
         }
-        void SelectionChanged() { EditorUtility.SetDirty(selection); SelectionNotice = ""; selectionWeights = null; SelectionRevision++; session.View?.Repaint(); }
+        void SelectionChanged() { EditorUtility.SetDirty(selection); selectedCount = -1; SelectionNotice = ""; selectionWeights = null; markersDirty = true; SelectionRevision++; session.View?.Repaint(); }
         public void SelectAllVertices() { if (CanEdit) { EnsureSelectionTarget(); SelectVertices(Enumerable.Range(0, selection.selected.Length), VertexSelectOperation.Replace); } }
         public void ClearVertexSelection() => SelectVertices(Array.Empty<int>(), VertexSelectOperation.Replace);
         public void ApplyNumericTransform(Vector3 value)
@@ -191,6 +237,7 @@ namespace FaceTrackingBuilder
         public void BeginVertexTransform()
         {
             if (transformGesture != null || !CanEdit) return; EnsureSelectionGeometry(); if (SelectedCount == 0) return;
+            Prepare(session.Renderer(plan));
             if (skinMatrices.Any(m => Mathf.Abs(m.determinant) < 1e-10f)) throw new InvalidOperationException("メッシュのスケールが0に近いため編集できません。");
             var weights = SelectionWeights();
             Undo.IncrementCurrentGroup(); int undo = Undo.GetCurrentGroup(); Undo.RegisterCompleteObjectUndo(session.Profile, "選択した頂点を編集");
@@ -199,16 +246,20 @@ namespace FaceTrackingBuilder
                 sculpt = recipe.sculpt.Length == selectionWorld.Length ? (Vector3[])recipe.sculpt.Clone() : new Vector3[selectionWorld.Length],
                 inverseSkin = skinMatrices.Select(m => m.inverse).ToArray(), weights = (float[])weights.Clone(), selected = (bool[])selection.selected.Clone(),
                 pivot = pivot, position = pivot, axes = axes, rotation = axes, recipe = recipe };
+            transformGesture.preview = VertexTransformPreview.Create(session.Renderer(plan), plan, recipe, transformGesture.sculpt);
         }
         public void PreviewVertexTransform(Vector3 translation, Quaternion rotation, Vector3 scale)
         {
             var gesture = transformGesture; if (gesture == null) return;
             if (gesture.recipe != recipe) { EndSelectionInteraction(false); return; }
+            if (gesture.preview != null && !gesture.preview.IsCurrent) { gesture.preview.Dispose(); gesture.preview = null; }
             if (symmetric && mirrorPairs == null) mirrorPairs = MeshEngine.MirrorPairs(baseVertices, recipe.planeOrigin, recipe.planeRight, recipe.mirrorTolerance);
             recipe.sculpt = VertexEditGeometry.Transform(gesture.world, gesture.inverseSkin, gesture.sculpt, gesture.weights, gesture.pivot, gesture.axes,
                 translation, rotation, scale, symmetric ? mirrorPairs : null, gesture.selected, recipe.planeRight);
             gesture.position = gesture.pivot + translation; gesture.rotation = rotation * gesture.axes; gesture.scale = scale;
-            Commit();
+            if (gesture.preview != null)
+            { gesture.preview.Apply(recipe.sculpt); EditorUtility.SetDirty(session.Profile); InvalidateSelectionGeometry(); }
+            else Commit();
         }
         public void EndSelectionInteraction(bool cancel)
         {
@@ -218,11 +269,21 @@ namespace FaceTrackingBuilder
             if (transformGesture != null)
             {
                 var gesture = transformGesture; transformGesture = null;
+                gesture.preview?.Dispose();
                 if (gesture.control != 0 && GUIUtility.hotControl == gesture.control) GUIUtility.hotControl = 0;
                 if (gesture.control != 0 && GUIUtility.keyboardControl == gesture.control) GUIUtility.keyboardControl = 0;
+                if (!cancel && gesture.preview != null)
+                {
+                    try { session.Rebuild(plan); session.Weight(plan.path, recipe.name, 100); }
+                    catch { Undo.RevertAllDownToGroup(gesture.undo); InvalidateSelectionGeometry(); throw; }
+                }
                 if (cancel) Undo.RevertAllDownToGroup(gesture.undo); else Undo.CollapseUndoOperations(gesture.undo);
                 Undo.IncrementCurrentGroup();
                 if (cancel && session?.Clone != null) { session.Rebuild(); session.Weight(plan.path, recipe.name, 100); changed?.Invoke(); }
+                if (!cancel)
+                {
+                    changed?.Invoke();
+                }
                 InvalidateSelectionGeometry();
             }
             if (selecting)
@@ -240,7 +301,7 @@ namespace FaceTrackingBuilder
                 SelectionChanged();
             }
         }
-        void DisposeSelection() { if (selection) { Undo.ClearUndo(selection); UnityEngine.Object.DestroyImmediate(selection); } selection = null; surfaces.Clear(); surfaceCache.Clear(); }
+        void DisposeSelection() { if (selection) { Undo.ClearUndo(selection); UnityEngine.Object.DestroyImmediate(selection); } selection = null; surfaces.Clear(); surfaceCache.Clear(); surfaceStates.Clear(); surfaceMeshes.Clear(); pointDisplay.Dispose(); }
         public void ToggleSelectionTool(VertexSelectTool tool)
         {
             selectionTool = selectionTool == tool ? VertexSelectTool.Normal : tool;
@@ -264,6 +325,7 @@ namespace FaceTrackingBuilder
         void SelectLoopAt(SceneView view, Vector2 point, bool shift)
         {
             EnsureSelectionGeometry(); EnsureSelectionProjection(view);
+            EnsureSelectionVisibility(new Rect(-1000000, -1000000, 2000000, 2000000));
             if (loopTopology == null || loopJoined != joinCoincident)
             { loopTopology = new VertexLoopTopology(plan.source.vertices, plan.source.triangles, joinCoincident); loopJoined = joinCoincident; }
             int edge = loopTopology.PickEdge(screenPoints, eligible, point, 9, screenDepth);
@@ -340,7 +402,7 @@ namespace FaceTrackingBuilder
             { DrawSelectionPoints(); return; }
             selectionControl = GUIUtility.GetControlID("FTBVertexSelection".GetHashCode(), FocusType.Passive);
             if (e.type == EventType.Layout) HandleUtility.AddDefaultControl(selectionControl);
-            if (!selecting && (transformGesture != null || (selectionTool == VertexSelectTool.Normal && !e.shift && !e.control && !e.command))) DrawTransformHandles();
+            if (!selecting && (transformGesture != null || (!e.shift && !e.control && !e.command))) DrawTransformHandles();
             CompleteReleasedHandle(GUIUtility.hotControl);
             if (transformGesture != null)
             {
@@ -361,6 +423,7 @@ namespace FaceTrackingBuilder
                 Undo.IncrementCurrentGroup(); selectionUndo = Undo.GetCurrentGroup(); Undo.RegisterCompleteObjectUndo(selection, "頂点の選択");
                 if (selectionTool == VertexSelectTool.Linked)
                 {
+                    EnsureSelectionVisibility(SelectionRegion(selectionStart, selectionEnd, 10)); EnsureOccluders();
                     int index = VertexEditGeometry.Click(screenPoints, eligible, e.mousePosition, 10);
                     var ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
                     if (targetSurface.Hit(ray, float.MaxValue, out float distance, out int hit) &&
@@ -369,7 +432,10 @@ namespace FaceTrackingBuilder
                     EndSelectionInteraction(false);
                 }
                 else if (selectionTool == VertexSelectTool.Brush)
+                {
+                    EnsureSelectionVisibility(SelectionRegion(selectionStart, selectionEnd, selectionRadius));
                     ChangeGestureSelection(VertexEditGeometry.Brush(screenPoints, eligible, selectionStart, selectionEnd, selectionRadius), gestureOperation);
+                }
                 e.Use();
             }
             else if (selecting && e.type == EventType.MouseDrag && GUIUtility.hotControl == selectionControl)
@@ -377,16 +443,22 @@ namespace FaceTrackingBuilder
                 Vector2 previous = selectionEnd; selectionEnd = e.mousePosition;
                 boxDragging |= VertexEditGeometry.IsBoxDrag(selectionStart, selectionEnd);
                 if (selectionTool == VertexSelectTool.Brush)
+                {
+                    EnsureSelectionVisibility(SelectionRegion(previous, selectionEnd, selectionRadius));
                     ChangeGestureSelection(VertexEditGeometry.Brush(screenPoints, eligible, previous, selectionEnd, selectionRadius),
                         gestureOperation == VertexSelectOperation.Replace ? VertexSelectOperation.Add : gestureOperation);
+                }
                 view.Repaint(); e.Use();
             }
             else if (selecting && e.rawType == EventType.MouseUp)
             {
                 selectionEnd = e.mousePosition;
                 if (selectionTool == VertexSelectTool.Normal)
+                {
+                    EnsureSelectionVisibility(SelectionRegion(selectionStart, selectionEnd, 10));
                     ChangeGestureSelection(VertexEditGeometry.NormalSelection(screenPoints, eligible, selectionStart, selectionEnd,
                         boxDragging || VertexEditGeometry.IsBoxDrag(selectionStart, selectionEnd)), gestureOperation);
+                }
                 EndSelectionInteraction(false); e.Use();
             }
             if (e.type == EventType.Ignore || e.type == EventType.MouseLeaveWindow) EndSelectionInteraction(false);
@@ -427,7 +499,7 @@ namespace FaceTrackingBuilder
         public void ResizeProportionalRadius(float value)
         {
             if (!VertexEditGeometry.Finite(value)) return;
-            proportionalRadius = Mathf.Clamp(value, .001f, .15f); selectionWeights = null;
+            proportionalRadius = Mathf.Clamp(value, .001f, .15f); selectionWeights = null; markersDirty = true;
             if (transformGesture != null)
             {
                 var gesture = transformGesture;
@@ -442,21 +514,12 @@ namespace FaceTrackingBuilder
             var weights = SelectionWeights(); var oldColor = Handles.color; var oldDepth = Handles.zTest; Handles.zTest = CompareFunction.Always;
             try
             {
-                Handles.BeginGUI();
-                try
+                if (markersDirty)
                 {
-                    for (int pass = 0; pass < 2; pass++)
-                        for (int i = 0; i < selectionWorld.Length; i++)
-                        {
-                            bool selected = selection.selected[i];
-                            if (!eligible[i] || selected != (pass == 1)) continue;
-                            Rect rect = VertexEditGeometry.MarkerRect(screenPoints[i], selected);
-                            EditorGUI.DrawRect(rect, new Color(.06f, .07f, .08f, 1));
-                            rect = new Rect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
-                            EditorGUI.DrawRect(rect, VertexEditGeometry.MarkerColor(selected, weights[i]));
-                        }
+                    pointDisplay.Build(selectionWorld, inViewport, screenDepth, selection.selected, weights, session.View.camera, EditorGUIUtility.pixelsPerPoint);
+                    markersDirty = false;
                 }
-                finally { Handles.EndGUI(); }
+                pointDisplay.SetOccluders(session.Clone); pointDisplay.Draw(session.View.camera, selectThrough);
                 if (proportional && SelectedCount == 1)
                 {
                     Handles.color = new Color(1, .7f, .1f, .7f);

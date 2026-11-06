@@ -34,7 +34,7 @@ namespace FaceTrackingBuilder
             var search = new ToolbarSearchField { name = "shapeSearch" }; search.RegisterValueChangedCallback(e => { query = e.newValue; Filter(); }); left.Add(search);
             var categories = new PopupField<string>("部位", new List<string> { "すべて", "目", "眉", "口", "顎", "頬", "鼻", "舌", "喉・首", "その他" }, 0);
             categories.RegisterValueChangedCallback(e => { category = e.newValue; Filter(); }); left.Add(categories);
-            list = new ListView { name = "shapeList", fixedItemHeight = 42, selectionType = SelectionType.Single };
+            list = new ListView { name = "shapeList", selectionType = SelectionType.Single };
             list.AddToClassList("shape-list");
             list.makeItem = () => { var item = new VisualElement(); item.AddToClassList("shape-item"); item.Add(new Label { name = "shapeName" }); var caption = new Label { name = "shapeCaption" }; caption.AddToClassList("muted"); item.Add(caption); return item; };
             list.bindItem = (element, index) => { string name = (string)list.itemsSource[index]; element.Q<Label>("shapeName").text = name; element.Q<Label>("shapeCaption").text = Caption(name); };
@@ -50,6 +50,7 @@ namespace FaceTrackingBuilder
             ActionBar = buttons;
             buttons.Add(new Button(cancel) { text = "キャンセルして戻る" });
             use = new Button(() => { if (selected != null) accept(selected); }) { text = "この表情を使う", name = "useShape" }; use.AddToClassList("primary"); use.SetEnabled(false); buttons.Add(use);
+            use.AddToClassList("row-end");
             Filter(); int initial = Array.IndexOf(names, current);
             if (initial >= 0) { list.selectedIndex = initial; ExpressionListNavigation.RevealSelection(list); }
         }

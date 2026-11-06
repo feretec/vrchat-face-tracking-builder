@@ -16,6 +16,7 @@ namespace FaceTrackingBuilder
         readonly Label title, state, help;
         readonly PopupField<string> operation;
         readonly Button neutral, expression;
+        readonly Toggle hideOtherObjects;
         readonly Button brushMode, vertexMode, brushSelect, linkedSelect, loopSelect;
         readonly PopupField<string> transformTool, coordinateSpace;
         readonly Label selectedCount, selectionMessage, selectionModeLabel, loopNotice;
@@ -56,6 +57,10 @@ namespace FaceTrackingBuilder
             int displayIndex = view.cameraMode.drawMode == DrawCameraMode.TexturedWire ? 1 : view.cameraMode.drawMode == DrawCameraMode.Wireframe ? 2 : 0;
             var display = new PopupField<string>("表示", new List<string> { "通常", "ワイヤー重ね表示", "ワイヤーのみ" }, displayIndex) { name = "brushDisplayMode" };
             display.RegisterValueChangedCallback(e => SetDisplayMode(display.index)); scroll.Add(display);
+            hideOtherObjects = new Toggle("他のオブジェクトを非表示") { name = "hideOtherObjects", value = editor.HideOtherObjects,
+                tooltip = "編集中のメッシュだけを表示します。元のアバターや保存結果には反映されません。" };
+            hideOtherObjects.RegisterValueChangedCallback(e => Run(() => editor.SetHideOtherObjects(e.newValue))); scroll.Add(hideOtherObjects);
+            Root.RegisterCallback<DetachFromPanelEvent>(OnDetach);
             editing = new VisualElement { name = "brushEditingControls" }; scroll.Add(editing);
             var modes = new VisualElement(); modes.AddToClassList("choice-row"); editing.Add(modes);
             brushMode = new Button(() => Run(() => editor.SetSelectionMode(false))) { text = "ブラシで変形", name = "brushEditMode" };
@@ -121,6 +126,7 @@ namespace FaceTrackingBuilder
             history.Add(new Button(() => Run(() => { editor.EndSelectionInteraction(false); Undo.PerformRedo(); })) { text = "やり直す" });
             help = new Label(); help.AddToClassList("muted"); scroll.Add(help);
             scroll.Add(new Button(() => Run(editor.Frame)) { text = "顔を中央に表示" });
+            foreach (var row in Root.Query(className: "choice-row").ToList()) row[row.childCount - 1].AddToClassList("row-end");
             Root.RegisterCallback<PointerEnterEvent>(e => editor.pointerOverControls = true);
             Root.RegisterCallback<PointerLeaveEvent>(e => editor.pointerOverControls = false);
             Root.RegisterCallback<DetachFromPanelEvent>(e => editor.pointerOverControls = false);
@@ -176,6 +182,7 @@ namespace FaceTrackingBuilder
             editor.ObserveVertexPointer((e.pressedButtons & 1) != 0);
         }
         void OnPointerLeave(PointerLeaveEvent e) { Navigating = false; editor.pointerOverControls = false; editor.ObserveVertexPointer(false); }
+        void OnDetach(DetachFromPanelEvent e) { if (e.target == Root && editor.HideOtherObjects) Run(() => editor.SetHideOtherObjects(false)); }
         internal void FocusViewport()
         {
             Root.panel?.focusController.focusedElement?.Blur();
@@ -201,6 +208,7 @@ namespace FaceTrackingBuilder
         {
             bool active = editor.enabled && editor.session?.Clone != null && editor.recipe != null && string.IsNullOrEmpty(editor.recipe.mirrorOf);
             bool before = editor.session != null && editor.session.Comparing;
+            hideOtherObjects.SetValueWithoutNotify(editor.HideOtherObjects); hideOtherObjects.SetEnabled(active);
             string key = editor.recipe?.trackingKey ?? editor.session?.Profile.mappings.FirstOrDefault(m => m.shape == editor.recipe?.name)?.key;
             title.text = editor.recipe == null ? "表情の編集" : string.IsNullOrEmpty(key) ? editor.recipe.name : ExpressionGuide.Title(key);
             operation.SetValueWithoutNotify(operation.choices[editor.brush ? (editor.paintMask ? 1 : 0) : 2]);
@@ -211,7 +219,6 @@ namespace FaceTrackingBuilder
             loopSelect.EnableInClassList("selected-choice", editor.selectionTool == VertexSelectTool.Loop);
             selectionModeLabel.text = editor.selectionTool == VertexSelectTool.Normal ? "通常：クリック・ドラッグで選択" :
                 (editor.selectionTool == VertexSelectTool.Brush ? "ブラシ選択" : editor.selectionTool == VertexSelectTool.Linked ? "リンク選択" : "ループ選択") + "（右クリックで解除）";
-            foreach (var button in new[] { brushSelect, linkedSelect, loopSelect }) button.Q<BuilderIconElement>().MarkDirtyRepaint();
             loopNotice.text = editor.SelectionNotice; loopNotice.EnableInClassList("hidden", string.IsNullOrEmpty(editor.SelectionNotice));
             transformTool.SetValueWithoutNotify(transformTool.choices[(int)editor.transformTool]); coordinateSpace.SetValueWithoutNotify(coordinateSpace.choices[editor.avatarAxes ? 0 : 1]);
             selectionRadius.EnableInClassList("hidden", editor.selectionTool != VertexSelectTool.Brush);
@@ -233,6 +240,7 @@ namespace FaceTrackingBuilder
         public void Dispose()
         {
             refresh.Pause();
+            Root.UnregisterCallback<DetachFromPanelEvent>(OnDetach);
             if (View)
             {
                 View.rootVisualElement.UnregisterCallback<KeyDownEvent>(OnKeyDown, TrickleDown.TrickleDown);
